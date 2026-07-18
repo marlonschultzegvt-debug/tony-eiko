@@ -1,0 +1,20 @@
+{
+  "name": "Tony & Eiko Hair Studio",
+  "short_name": "Tony & Eiko",
+  "description": "App de agendamento e gestao para Tony & Eiko Hair Studio.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f7f2ea",
+  "theme_color": "#f7f2ea",
+  "categories": ["beauty", "business", "productivity"],
+  "icons": [
+    {
+      "src": "/assets/tony-eiko-logo.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}
