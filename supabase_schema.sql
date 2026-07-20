@@ -259,9 +259,9 @@ create policy "availability admin write" on public.availability_slots
 for all to authenticated using (public.is_admin()) with check (public.is_admin());
 
 drop policy if exists "blocked slots staff admin read" on public.blocked_slots;
-create policy "blocked slots staff admin read" on public.blocked_slots
-for select to authenticated
-using (public.is_admin() or professional_id = public.user_professional_id());
+drop policy if exists "blocked slots visible for scheduling" on public.blocked_slots;
+create policy "blocked slots visible for scheduling" on public.blocked_slots
+for select to anon, authenticated using (true);
 
 drop policy if exists "blocked slots staff admin write" on public.blocked_slots;
 create policy "blocked slots staff admin write" on public.blocked_slots
