@@ -76,6 +76,31 @@ export function mapSettingsToDb(settings) {
   };
 }
 
+export function mapAvailabilityFromDb(row) {
+  return {
+    id: row.id,
+    proId: row.professional_id,
+    weekday: row.weekday,
+    startsAt: String(row.starts_at || '').slice(0, 5),
+    endsAt: String(row.ends_at || '').slice(0, 5),
+    active: row.active !== false,
+  };
+}
+
+export function mapBlockedSlotFromDb(row) {
+  const startsAt = new Date(row.starts_at);
+  const endsAt = new Date(row.ends_at);
+
+  return {
+    id: row.id,
+    proId: row.professional_id || 'todos',
+    date: startsAt.toISOString().slice(0, 10),
+    startsAt: startsAt.toTimeString().slice(0, 5),
+    endsAt: endsAt.toTimeString().slice(0, 5),
+    reason: row.reason || 'Agenda fechada',
+  };
+}
+
 export function mapAppointmentFromDb(row) {
   const startsAt = new Date(row.starts_at);
   const serviceIds = (row.appointment_services || []).map((item) => item.service_id);

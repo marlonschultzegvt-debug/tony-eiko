@@ -35,6 +35,8 @@ import './styles.css';
 import {
   hasSupabaseConfig,
   mapAppointmentFromDb,
+  mapAvailabilityFromDb,
+  mapBlockedSlotFromDb,
   mapProfessionalFromDb,
   mapProfessionalToDb,
   mapServiceFromDb,
@@ -159,6 +161,29 @@ const seedAppointments = [
 
 const slots = ['09:00', '10:00', '11:00', '13:30', '14:00', '15:00', '16:00', '17:00', '18:00'];
 const storageKey = 'tony-eiko-app-state-v1';
+const openWeekdaysDefault = [2, 3, 4, 5, 6];
+const weekdayLabels = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
+
+function buildDefaultAvailability(prosList = prosInitial) {
+  return prosList.flatMap((pro) => openWeekdaysDefault.flatMap((weekday) => [
+    {
+      id: `${pro.id}-${weekday}-manha`,
+      proId: pro.id,
+      weekday,
+      startsAt: '09:00',
+      endsAt: '12:00',
+      active: true,
+    },
+    {
+      id: `${pro.id}-${weekday}-tarde`,
+      proId: pro.id,
+      weekday,
+      startsAt: '13:30',
+      endsAt: '18:00',
+      active: true,
+    },
+  ]));
+}
 
 const businessSettingsInitial = {
   businessName: 'Tony & Eiko Hair Studio',
@@ -171,26 +196,43 @@ const businessSettingsInitial = {
 const accessProfiles = [
   {
     id: 'cliente',
+    dbRole: 'client',
     label: 'Cliente',
     title: 'Agendar atendimento',
     desc: 'Fluxo simples para escolher servico, profissional e horario.',
+    loginTitle: 'Login do cliente',
+    loginDesc: 'Acesso para agendar, acompanhar pedidos e manter seus dados de contato.',
+    demoEmail: 'cliente@tonyeiko.com.br',
+    demoName: 'Cliente Tony & Eiko',
     icon: CalendarDays,
   },
   {
     id: 'staff',
+    dbRole: 'staff',
     label: 'Profissional',
     title: 'Agenda do profissional',
     desc: 'Visualiza solicitacoes e atualiza o status dos atendimentos.',
+    loginTitle: 'Login do profissional',
+    loginDesc: 'Acesso para agenda individual, confirmacao de horarios e status dos atendimentos.',
+    demoEmail: 'profissional@tonyeiko.com.br',
+    demoName: 'Profissional Tony & Eiko',
     icon: UserRound,
   },
   {
     id: 'admin',
+    dbRole: 'admin',
     label: 'Gestao',
     title: 'Painel completo',
     desc: 'Acessa agenda, indicadores, servicos, equipe e configuracoes.',
+    loginTitle: 'Login da gestao',
+    loginDesc: 'Acesso completo para administrar agenda, equipe, servicos e configuracoes.',
+    demoEmail: 'gestao@tonyeiko.com.br',
+    demoName: 'Gestao Tony & Eiko',
     icon: LayoutDashboard,
   },
 ];
+
+const demoPassword = 'tonyeiko123';
 
 function isoDate(offset = 0) {
   const d = new Date();
@@ -206,6 +248,36 @@ function money(value) {
 function dateLabel(value) {
   const date = new Date(`${value}T12:00:00`);
   return date.toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: 'short' }).replace('.', '');
+}
+
+function weekdayFromDate(value) {
+  return new Date(`${value}T12:00:00`).getDay();
+}
+
+function timeToMinutes(value) {
+  const [hours, minutes] = String(value || '00:00').split(':').map(Number);
+  return (hours || 0) * 60 + (minutes || 0);
+}
+
+function slotEnd(time, durationMinutes = 60) {
+  const total = timeToMinutes(time) + Math.max(1, Number(durationMinutes || 60));
+  const hours = String(Math.floor(total / 60)).padStart(2, '0');
+  const minutes = String(total % 60).padStart(2, '0');
+  return `${hours}:${minutes}`;
+}
+
+function slotFitsWindow(slot, durationMinutes, window) {
+  const start = timeToMinutes(slot);
+  const end = start + Math.max(1, Number(durationMinutes || 60));
+  return start >= timeToMinutes(window.startsAt) && end <= timeToMinutes(window.endsAt);
+}
+
+function isSlotBlocked(block, date, proId, slot, durationMinutes) {
+  if (block.date !== date) return false;
+  if (block.proId !== 'todos' && block.proId !== proId) return false;
+  const start = timeToMinutes(slot);
+  const end = start + Math.max(1, Number(durationMinutes || 60));
+  return start < timeToMinutes(block.endsAt) && end > timeToMinutes(block.startsAt);
 }
 
 function loadState() {
@@ -230,6 +302,8 @@ function App() {
   const [appointments, setAppointments] = useState(saved?.appointments || seedAppointments);
   const [services, setServices] = useState(saved?.services || servicesInitial);
   const [pros, setPros] = useState(saved?.pros || prosInitial);
+  const [availability, setAvailability] = useState(saved?.availability || buildDefaultAvailability(saved?.pros || prosInitial));
+  const [blockedSlots, setBlockedSlots] = useState(saved?.blockedSlots || []);
   const [settings, setSettings] = useState(saved?.settings || businessSettingsInitial);
   const [currentUser, setCurrentUser] = useState(saved?.currentUser || null);
   const [role, setRole] = useState('cliente');
@@ -313,6 +387,26 @@ function App() {
     .filter((apt) => apt.date === selectedDate && apt.proId === selectedPro && apt.status !== 'recusado')
     .map((apt) => apt.time);
 
+  const getSlotState = (date, proId, slot) => {
+    if (!date || !proId) return { available: false, reason: 'Selecione profissional' };
+    const weekday = weekdayFromDate(date);
+    const windows = availability.filter((item) => item.proId === proId && item.weekday === weekday && item.active);
+    if (!windows.length) return { available: false, reason: 'fechado' };
+    if (!windows.some((window) => slotFitsWindow(slot, totalDuration || 60, window))) {
+      return { available: false, reason: 'fora do horario' };
+    }
+    const block = blockedSlots.find((item) => isSlotBlocked(item, date, proId, slot, totalDuration || 60));
+    if (block) return { available: false, reason: block.reason || 'bloqueado' };
+    const taken = appointments.some((apt) => apt.date === date && apt.proId === proId && apt.time === slot && apt.status !== 'recusado');
+    if (taken) return { available: false, reason: 'ocupado' };
+    return { available: true, reason: '' };
+  };
+
+  const isDayAvailable = (date, proId = selectedPro) => {
+    if (!proId) return true;
+    return slots.some((slot) => getSlotState(date, proId, slot).available);
+  };
+
   const days = Array.from({ length: 14 }, (_, index) => {
     const d = new Date();
     d.setHours(12, 0, 0, 0);
@@ -325,28 +419,37 @@ function App() {
       appointments: 'appointments' in next ? next.appointments : appointments,
       services: 'services' in next ? next.services : services,
       pros: 'pros' in next ? next.pros : pros,
+      availability: 'availability' in next ? next.availability : availability,
+      blockedSlots: 'blockedSlots' in next ? next.blockedSlots : blockedSlots,
       settings: 'settings' in next ? next.settings : settings,
       currentUser: 'currentUser' in next ? next.currentUser : currentUser,
     }));
   }
 
-  async function applyUserProfile(user) {
+  async function applyUserProfile(user, expectedRole = '') {
     if (!hasSupabaseConfig || !user) return;
 
     const { data, error } = await supabase
       .from('profiles')
-      .select('full_name, role')
+      .select('full_name, role, phone')
       .eq('id', user.id)
       .maybeSingle();
 
     if (error) throw error;
 
     const profileRole = data?.role || 'client';
+    if (expectedRole && profileRole !== expectedRole) {
+      await supabase.auth.signOut();
+      throw new Error('Este usuario nao pertence ao perfil selecionado.');
+    }
+
     const appRole = profileRole === 'client' ? 'cliente' : profileRole;
     const nextUser = {
       role: appRole,
       label: profileRole === 'admin' ? 'Gestao' : profileRole === 'staff' ? 'Profissional' : 'Cliente',
       name: data?.full_name || user.email || 'Usuario Tony & Eiko',
+      email: user.email || '',
+      phone: data?.phone || '',
     };
 
     setCurrentUser(nextUser);
@@ -365,12 +468,18 @@ function App() {
       servicesResult,
       professionalsResult,
       linksResult,
+      availabilityResult,
+      blockedSlotsResult,
       appointmentsResult,
     ] = await Promise.all([
       supabase.from('business_settings').select('*').eq('id', 'main').maybeSingle(),
       supabase.from('services').select('*').eq('active', true).order('sort_order'),
       supabase.from('professionals').select('*').eq('active', true).order('sort_order'),
       supabase.from('professional_services').select('*'),
+      supabase.from('availability_slots').select('*').eq('active', true).order('weekday').order('starts_at'),
+      activeSession
+        ? supabase.from('blocked_slots').select('id, professional_id, starts_at, ends_at, reason').order('starts_at')
+        : Promise.resolve({ data: [], error: null }),
       activeSession
         ? supabase.from('appointments').select('*, appointment_services(service_id, price_cents, duration_minutes)').order('starts_at')
         : Promise.resolve({ data: [], error: null }),
@@ -381,6 +490,8 @@ function App() {
       servicesResult.error,
       professionalsResult.error,
       linksResult.error,
+      availabilityResult.error,
+      blockedSlotsResult.error,
       appointmentsResult.error,
     ].find(Boolean);
 
@@ -401,6 +512,12 @@ function App() {
 
     if (nextServices.length) setServices(nextServices);
     if (nextPros.length) setPros(nextPros);
+    if (availabilityResult.data?.length) {
+      setAvailability(availabilityResult.data.map(mapAvailabilityFromDb).map((item) => (
+        item.weekday === 1 ? { ...item, active: false } : item
+      )));
+    }
+    setBlockedSlots((blockedSlotsResult.data || []).map(mapBlockedSlotFromDb));
     setAppointments(nextAppointments);
   }
 
@@ -442,6 +559,21 @@ function App() {
   async function saveSupabaseSettings(nextSettings) {
     if (!hasSupabaseConfig || backendMode !== 'supabase' || currentUser?.role !== 'admin') return;
     const { error } = await supabase.from('business_settings').upsert(mapSettingsToDb(nextSettings));
+    if (error) throw error;
+  }
+
+  async function saveSupabaseAvailability(nextAvailability) {
+    if (!hasSupabaseConfig || backendMode !== 'supabase' || currentUser?.role !== 'admin') return;
+    const rows = nextAvailability.map((item) => ({
+      professional_id: item.proId,
+      weekday: item.weekday,
+      starts_at: item.startsAt,
+      ends_at: item.endsAt,
+      active: item.active !== false,
+    }));
+    const { error } = await supabase
+      .from('availability_slots')
+      .upsert(rows, { onConflict: 'professional_id,weekday,starts_at,ends_at' });
     if (error) throw error;
   }
 
@@ -544,13 +676,15 @@ function App() {
     setInstallPrompt(null);
   }
 
-  function loginAs(profileId) {
+  function loginAs(profileId, identity = {}) {
     setBackendMode('local');
     const profile = accessProfiles.find((item) => item.id === profileId);
     const nextUser = {
       role: profile.id,
       label: profile.label,
-      name: profile.id === 'cliente' ? 'Cliente convidado' : profile.id === 'staff' ? 'Profissional Tony & Eiko' : 'Gestao Tony & Eiko',
+      name: identity.name || profile.demoName,
+      email: identity.email || profile.demoEmail,
+      phone: identity.phone || '',
     };
     setCurrentUser(nextUser);
     setRole(profile.id === 'staff' ? 'staff' : 'admin');
@@ -559,7 +693,7 @@ function App() {
     persist({ currentUser: nextUser });
   }
 
-  async function loginWithPassword(email, password) {
+  async function loginWithPassword(email, password, expectedRole) {
     if (!hasSupabaseConfig) return;
     setAuthError('');
     setLoadingData(true);
@@ -573,9 +707,16 @@ function App() {
 
     setBackendMode('supabase');
     setSession(data.session || null);
-    await applyUserProfile(data.user);
-    await loadSupabaseData(data.session);
-    setLoadingData(false);
+    try {
+      setBackendMode('supabase');
+      setSession(data.session || null);
+      await applyUserProfile(data.user, expectedRole);
+      await loadSupabaseData(data.session);
+    } catch (error) {
+      setAuthError(error.message || 'Falha ao validar o perfil do usuario.');
+    } finally {
+      setLoadingData(false);
+    }
   }
 
   async function logout() {
@@ -692,7 +833,8 @@ function App() {
               selectedTime={selectedTime}
               setSelectedTime={setSelectedTime}
               slots={slots}
-              bookedTimes={bookedTimes}
+              getSlotState={getSlotState}
+              isDayAvailable={isDayAvailable}
               client={client}
               setClient={setClient}
               total={total}
@@ -729,6 +871,17 @@ function App() {
                 persist({ pros: next });
               }}
               setCatalog={updateCatalog}
+              availability={availability}
+              setAvailability={(next) => {
+                saveSupabaseAvailability(next).catch((error) => setSyncError(error.message));
+                setAvailability(next);
+                persist({ availability: next });
+              }}
+              blockedSlots={blockedSlots}
+              setBlockedSlots={(next) => {
+                setBlockedSlots(next);
+                persist({ blockedSlots: next });
+              }}
               settings={settings}
               setSettings={(next) => {
                 saveSupabaseSettings(next).catch((error) => setSyncError(error.message));
@@ -747,11 +900,34 @@ function App() {
 }
 
 function AccessGate({ settings, profiles, onLogin, hasSupabaseConfig: canUseSupabase, onPasswordLogin, loadingData, authError }) {
-  const [credentials, setCredentials] = useState({ email: '', password: '' });
+  const [selectedProfile, setSelectedProfile] = useState(profiles[0]?.id || 'cliente');
+  const [credentials, setCredentials] = useState({ name: '', phone: '', email: profiles[0]?.demoEmail || '', password: demoPassword });
+  const profile = profiles.find((item) => item.id === selectedProfile) || profiles[0];
+  const Icon = profile.icon;
+
+  function updateSelectedProfile(profileId) {
+    const nextProfile = profiles.find((item) => item.id === profileId);
+    setSelectedProfile(profileId);
+    setCredentials({
+      name: '',
+      phone: '',
+      email: nextProfile?.demoEmail || '',
+      password: canUseSupabase ? '' : demoPassword,
+    });
+  }
 
   function submit(event) {
     event.preventDefault();
-    onPasswordLogin(credentials.email.trim(), credentials.password);
+    if (canUseSupabase) {
+      onPasswordLogin(credentials.email.trim(), credentials.password, profile.dbRole);
+      return;
+    }
+
+    onLogin(profile.id, {
+      name: credentials.name.trim() || profile.demoName,
+      email: credentials.email.trim() || profile.demoEmail,
+      phone: credentials.phone.trim(),
+    });
   }
 
   return (
@@ -760,14 +936,58 @@ function AccessGate({ settings, profiles, onLogin, hasSupabaseConfig: canUseSupa
         <div className="access-brand">
           <img src="/assets/tony-eiko-logo.jpg" alt="Tony & Eiko" />
           <div>
-            <span>{canUseSupabase ? 'Acesso seguro' : 'Acesso simulado'}</span>
+            <span>{canUseSupabase ? 'Acesso seguro' : 'Acesso de teste'}</span>
             <h1>{settings.businessName}</h1>
-            <p>{canUseSupabase ? 'Entre com email e senha cadastrados no Supabase.' : 'Escolha um perfil para validar a experiencia do app antes do login real.'}</p>
+            <p>{canUseSupabase ? 'Entre com email e senha do perfil cadastrado no Supabase.' : 'Escolha um perfil e entre no modo teste para validar os fluxos.'}</p>
           </div>
         </div>
 
-        {canUseSupabase && (
-          <form className="login-form" onSubmit={submit}>
+        <div className="login-tabs" role="tablist" aria-label="Tipo de login">
+          {profiles.map((item) => {
+            const TabIcon = item.icon;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                className={selectedProfile === item.id ? 'active' : ''}
+                onClick={() => updateSelectedProfile(item.id)}
+              >
+                <TabIcon size={15} />
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <form className="login-form" onSubmit={submit}>
+          <div className="login-profile-summary">
+            <Icon size={19} />
+            <div>
+              <b>{profile.loginTitle}</b>
+              <span>{profile.loginDesc}</span>
+            </div>
+          </div>
+
+          {!canUseSupabase && (
+            <>
+              <label>Nome</label>
+              <input
+                value={credentials.name}
+                onChange={(event) => setCredentials({ ...credentials, name: event.target.value })}
+                placeholder={profile.demoName}
+                autoComplete="name"
+              />
+              <label>WhatsApp</label>
+              <input
+                value={credentials.phone}
+                onChange={(event) => setCredentials({ ...credentials, phone: event.target.value })}
+                placeholder="44 99999-9999"
+                inputMode="tel"
+                autoComplete="tel"
+              />
+            </>
+          )}
+
             <label>Email</label>
             <input
               type="email"
@@ -786,10 +1006,22 @@ function AccessGate({ settings, profiles, onLogin, hasSupabaseConfig: canUseSupa
             />
             {authError && <p className="form-error">{authError}</p>}
             <button className="primary" disabled={loadingData || !credentials.email || !credentials.password}>
-              <KeyRound size={17} /> {loadingData ? 'Entrando...' : 'Entrar'}
+              <KeyRound size={17} /> {loadingData ? 'Entrando...' : `Entrar como ${profile.label}`}
             </button>
-          </form>
-        )}
+            {canUseSupabase && (
+              <button
+                type="button"
+                className="secondary compact"
+                onClick={() => onLogin(profile.id, {
+                  name: credentials.name.trim() || profile.demoName,
+                  email: credentials.email.trim() || profile.demoEmail,
+                  phone: credentials.phone.trim(),
+                })}
+              >
+                <Sparkles size={17} /> Testar como {profile.label}
+              </button>
+            )}
+        </form>
 
         <div className="access-options">
           {profiles.map((profile) => {
@@ -808,7 +1040,7 @@ function AccessGate({ settings, profiles, onLogin, hasSupabaseConfig: canUseSupa
 
         <div className="access-note">
           <KeyRound size={17} />
-          <span>{canUseSupabase ? 'Os botoes abaixo mantem um modo teste local para demonstracao sem mexer no banco.' : 'Login real entra na etapa Supabase. Esta versao nao usa senha nem dados sensiveis.'}</span>
+          <span>{canUseSupabase ? 'O login real valida o papel no Supabase. O modo teste serve apenas para demonstracao.' : `Conta de teste preenchida automaticamente. Senha local: ${demoPassword}.`}</span>
         </div>
       </section>
     </main>
@@ -948,7 +1180,8 @@ function Booking(props) {
     selectedTime,
     setSelectedTime,
     slots,
-    bookedTimes,
+    getSlotState,
+    isDayAvailable,
     client,
     setClient,
     total,
@@ -1029,26 +1262,35 @@ function Booking(props) {
           <button className="icon-mini"><ChevronRight size={18} /></button>
         </div>
         <div className="day-strip">
-          {days.map((day) => (
-            <button key={day} className={selectedDate === day ? 'active' : ''} onClick={() => { setSelectedDate(day); setSelectedTime(''); }}>
-              <span>{new Date(`${day}T12:00:00`).toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '')}</span>
-              <b>{day.slice(-2)}</b>
-            </button>
-          ))}
+          {days.map((day) => {
+            const available = isDayAvailable(day);
+            return (
+              <button
+                key={day}
+                disabled={!available}
+                className={`${selectedDate === day ? 'active' : ''} ${!available ? 'closed' : ''}`}
+                onClick={() => { setSelectedDate(day); setSelectedTime(''); }}
+              >
+                <span>{new Date(`${day}T12:00:00`).toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '')}</span>
+                <b>{day.slice(-2)}</b>
+                {!available && <small>fechado</small>}
+              </button>
+            );
+          })}
         </div>
         <p className="slots-title">Horarios para {pros.find((pro) => pro.id === selectedPro)?.name}</p>
         <div className="slots">
           {slots.map((slot) => {
-            const taken = bookedTimes.includes(slot);
+            const state = getSlotState(selectedDate, selectedPro, slot);
             return (
               <button
                 key={slot}
-                disabled={taken}
-                className={`${selectedTime === slot ? 'selected' : ''} ${taken ? 'taken' : ''}`}
+                disabled={!state.available}
+                className={`${selectedTime === slot ? 'selected' : ''} ${!state.available ? 'taken' : ''}`}
                 onClick={() => setSelectedTime(slot)}
               >
                 {slot}
-                {taken && <span>ocupado</span>}
+                {!state.available && <span>{state.reason}</span>}
               </button>
             );
           })}
@@ -1157,6 +1399,10 @@ function Admin(props) {
     setServices,
     setPros,
     setCatalog,
+    availability,
+    setAvailability,
+    blockedSlots,
+    setBlockedSlots,
     settings,
     setSettings,
     currentUser,
@@ -1183,6 +1429,7 @@ function Admin(props) {
 
   const visibleTabs = [
     ['agenda', 'Agenda', CalendarDays],
+    ['horarios', 'Horarios', Clock3],
     ['indicadores', 'Indicadores', BarChart3],
     ['servicos', 'Servicos', Scissors],
     ['equipe', 'Equipe', UsersRound],
@@ -1235,6 +1482,17 @@ function Admin(props) {
             ))}
           </div>
         </>
+      )}
+
+      {tab === 'horarios' && (
+        <ScheduleManager
+          pros={pros}
+          availability={availability}
+          setAvailability={setAvailability}
+          blockedSlots={blockedSlots}
+          setBlockedSlots={setBlockedSlots}
+          backendMode={backendMode}
+        />
       )}
 
       {tab === 'indicadores' && (
@@ -1300,6 +1558,173 @@ function Admin(props) {
       )}
 
       {tab === 'implantacao' && <LaunchPlan />}
+    </>
+  );
+}
+
+function localDateTimeIso(date, time) {
+  return new Date(`${date}T${time}:00`).toISOString();
+}
+
+function ScheduleManager({ pros, availability, setAvailability, blockedSlots, setBlockedSlots, backendMode }) {
+  const [blockForm, setBlockForm] = useState({
+    proId: 'todos',
+    date: isoDate(0),
+    startsAt: '09:00',
+    endsAt: '18:00',
+    reason: 'Agenda fechada',
+  });
+  const [scheduleError, setScheduleError] = useState('');
+
+  const openWeekdays = weekdayLabels.map((_, weekday) => availability.some((item) => item.weekday === weekday && item.active));
+
+  function toggleWeekday(weekday) {
+    const isOpen = openWeekdays[weekday];
+    let next = availability.map((item) => (item.weekday === weekday ? { ...item, active: !isOpen } : item));
+
+    if (!isOpen) {
+      pros.forEach((pro) => {
+        const hasMorning = next.some((item) => item.proId === pro.id && item.weekday === weekday && item.startsAt === '09:00' && item.endsAt === '12:00');
+        const hasAfternoon = next.some((item) => item.proId === pro.id && item.weekday === weekday && item.startsAt === '13:30' && item.endsAt === '18:00');
+        if (!hasMorning) {
+          next.push({ id: `${pro.id}-${weekday}-manha`, proId: pro.id, weekday, startsAt: '09:00', endsAt: '12:00', active: true });
+        }
+        if (!hasAfternoon) {
+          next.push({ id: `${pro.id}-${weekday}-tarde`, proId: pro.id, weekday, startsAt: '13:30', endsAt: '18:00', active: true });
+        }
+      });
+    }
+
+    setAvailability(next);
+  }
+
+  async function addBlock(event) {
+    event.preventDefault();
+    setScheduleError('');
+    if (timeToMinutes(blockForm.endsAt) <= timeToMinutes(blockForm.startsAt)) {
+      setScheduleError('O horario final precisa ser maior que o inicial.');
+      return;
+    }
+
+    let nextBlock = {
+      id: `block-${Date.now()}`,
+      proId: blockForm.proId,
+      date: blockForm.date,
+      startsAt: blockForm.startsAt,
+      endsAt: blockForm.endsAt,
+      reason: blockForm.reason.trim() || 'Agenda fechada',
+    };
+
+    if (hasSupabaseConfig && backendMode === 'supabase') {
+      const { data, error } = await supabase
+        .from('blocked_slots')
+        .insert({
+          professional_id: blockForm.proId === 'todos' ? null : blockForm.proId,
+          starts_at: localDateTimeIso(blockForm.date, blockForm.startsAt),
+          ends_at: localDateTimeIso(blockForm.date, blockForm.endsAt),
+          reason: nextBlock.reason,
+        })
+        .select('id, professional_id, starts_at, ends_at, reason')
+        .single();
+      if (error) {
+        setScheduleError(error.message);
+        return;
+      }
+      nextBlock = mapBlockedSlotFromDb(data);
+    }
+
+    setBlockedSlots([nextBlock, ...blockedSlots]);
+  }
+
+  async function removeBlock(id) {
+    setScheduleError('');
+    if (hasSupabaseConfig && backendMode === 'supabase') {
+      const { error } = await supabase.from('blocked_slots').delete().eq('id', id);
+      if (error) {
+        setScheduleError(error.message);
+        return;
+      }
+    }
+    setBlockedSlots(blockedSlots.filter((block) => block.id !== id));
+  }
+
+  return (
+    <>
+      <section className="launch-card">
+        <span>Agenda da gestao</span>
+        <h2>Dias de funcionamento e bloqueios manuais.</h2>
+        <p>Segunda-feira fica fechada por padrao. Use bloqueio manual para feriado, folga, viagem, curso ou agenda cheia.</p>
+      </section>
+
+      <article className="editor-card">
+        <div className="editor-card-head simple">
+          <div>
+            <h3>Dias que abrem</h3>
+            <p>Quando um dia esta fechado, ele some da escolha de horarios do cliente.</p>
+          </div>
+        </div>
+        <div className="weekday-grid">
+          {weekdayLabels.map((label, weekday) => (
+            <button
+              key={label}
+              className={openWeekdays[weekday] ? 'active' : ''}
+              onClick={() => toggleWeekday(weekday)}
+            >
+              <b>{label}</b>
+              <span>{openWeekdays[weekday] ? 'Aberto' : 'Fechado'}</span>
+            </button>
+          ))}
+        </div>
+      </article>
+
+      <form className="form-card schedule-form" onSubmit={addBlock}>
+        <label>Fechar agenda para</label>
+        <select value={blockForm.proId} onChange={(e) => setBlockForm({ ...blockForm, proId: e.target.value })}>
+          <option value="todos">Todos profissionais</option>
+          {pros.map((pro) => <option key={pro.id} value={pro.id}>{pro.name}</option>)}
+        </select>
+
+        <div className="editor-grid">
+          <label>Data
+            <input type="date" value={blockForm.date} onChange={(e) => setBlockForm({ ...blockForm, date: e.target.value })} />
+          </label>
+          <label>Motivo
+            <input value={blockForm.reason} onChange={(e) => setBlockForm({ ...blockForm, reason: e.target.value })} />
+          </label>
+          <label>Inicio
+            <input type="time" value={blockForm.startsAt} onChange={(e) => setBlockForm({ ...blockForm, startsAt: e.target.value })} />
+          </label>
+          <label>Fim
+            <input type="time" value={blockForm.endsAt} onChange={(e) => setBlockForm({ ...blockForm, endsAt: e.target.value })} />
+          </label>
+        </div>
+
+        {scheduleError && <p className="form-error">{scheduleError}</p>}
+        <button className="primary"><Clock3 size={17} /> Fechar agenda</button>
+      </form>
+
+      <div className="section-title">
+        <h2>Bloqueios ativos</h2>
+        <span>{blockedSlots.length} registro(s)</span>
+      </div>
+      <div className="stack">
+        {blockedSlots.length ? blockedSlots.map((block) => {
+          const proName = block.proId === 'todos' ? 'Todos profissionais' : pros.find((pro) => pro.id === block.proId)?.name || 'Profissional';
+          return (
+            <article className="editor-row" key={block.id}>
+              <div>
+                <h3>{proName}</h3>
+                <p>{dateLabel(block.date)} · {block.startsAt} ate {block.endsAt} · {block.reason}</p>
+              </div>
+              <button className="icon-danger" onClick={() => removeBlock(block.id)} aria-label="Remover bloqueio">
+                <Trash2 size={16} />
+              </button>
+            </article>
+          );
+        }) : (
+          <p className="muted">Nenhum bloqueio manual cadastrado.</p>
+        )}
+      </div>
     </>
   );
 }
