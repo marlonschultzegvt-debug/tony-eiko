@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Tony e Eiko">
-  <rect width="512" height="512" rx="112" fill="#f7f2ea"/>
-  <circle cx="256" cy="230" r="142" fill="#241913"/>
-  <circle cx="256" cy="230" r="118" fill="none" stroke="#c8963f" stroke-width="10"/>
-  <path d="M142 332c36-38 73-57 114-57s78 19 114 57" fill="none" stroke="#c8963f" stroke-width="18" stroke-linecap="round"/>
-  <path d="M178 207c28-46 54-69 78-69s50 23 78 69" fill="none" stroke="#fffaf3" stroke-width="16" stroke-linecap="round"/>
-  <text x="256" y="388" text-anchor="middle" font-family="Arial, sans-serif" font-size="42" font-weight="800" fill="#a86437">T&amp;E</text>
-</svg>
