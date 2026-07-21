@@ -1734,16 +1734,42 @@ function normalizeNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function createRecordId(prefix, items) {
+  const existing = new Set(items.map((item) => item.id));
+  let id = `${prefix}-${Date.now()}`;
+  let index = 1;
+
+  while (existing.has(id)) {
+    id = `${prefix}-${Date.now()}-${index}`;
+    index += 1;
+  }
+
+  return id;
+}
+
 function getServiceProIds(service, pros) {
   const fromService = Array.isArray(service.proIds) ? service.proIds : [];
   const fromPros = pros.filter((pro) => pro.services.includes(service.id)).map((pro) => pro.id);
   return Array.from(new Set([...fromService, ...fromPros]));
 }
 
-function ServiceManager({ services, pros, usage, setServices, setCatalog }) {
+function ServiceManager({ services, pros, usage, setCatalog }) {
+  const [draftServices, setDraftServices] = useState(services);
+  const [draftPros, setDraftPros] = useState(pros);
+  const [saveNotice, setSaveNotice] = useState('');
+
+  useEffect(() => {
+    setDraftServices(services);
+    setDraftPros(pros);
+  }, [services, pros]);
+
+  const hasChanges = JSON.stringify(draftServices) !== JSON.stringify(services)
+    || JSON.stringify(draftPros) !== JSON.stringify(pros);
+
   function addService() {
-    setServices([...services, {
-      id: `servico-${Date.now()}`,
+    setSaveNotice('');
+    setDraftServices([...draftServices, {
+      id: createRecordId('servico', draftServices),
       name: 'Novo servico',
       category: 'Novo',
       price: 100,
@@ -1754,40 +1780,65 @@ function ServiceManager({ services, pros, usage, setServices, setCatalog }) {
   }
 
   function updateService(id, patch) {
-    setServices(services.map((service) => (service.id === id ? { ...service, ...patch } : service)));
+    setSaveNotice('');
+    setDraftServices(draftServices.map((service) => (service.id === id ? { ...service, ...patch } : service)));
   }
 
   function toggleProfessional(serviceId, proId) {
-    const service = services.find((item) => item.id === serviceId);
-    const currentProIds = getServiceProIds(service, pros);
+    setSaveNotice('');
+    const service = draftServices.find((item) => item.id === serviceId);
+    const currentProIds = getServiceProIds(service, draftPros);
     const nextProIds = currentProIds.includes(proId)
       ? currentProIds.filter((id) => id !== proId)
       : [...currentProIds, proId];
-    const nextServices = services.map((item) => (item.id === serviceId ? { ...item, proIds: nextProIds } : item));
-    const nextPros = pros.map((pro) => {
+    const nextServices = draftServices.map((item) => (item.id === serviceId ? { ...item, proIds: nextProIds } : item));
+    const nextPros = draftPros.map((pro) => {
       const nextServiceIds = nextProIds.includes(pro.id)
         ? Array.from(new Set([...pro.services, serviceId]))
         : pro.services.filter((id) => id !== serviceId);
       return { ...pro, services: nextServiceIds };
     });
-    setCatalog(nextServices, nextPros);
+    setDraftServices(nextServices);
+    setDraftPros(nextPros);
   }
 
   function deleteService(id) {
-    const nextServices = services.filter((service) => service.id !== id);
-    const nextPros = pros.map((pro) => ({ ...pro, services: pro.services.filter((serviceId) => serviceId !== id) }));
-    setCatalog(nextServices, nextPros);
+    setSaveNotice('');
+    const nextServices = draftServices.filter((service) => service.id !== id);
+    const nextPros = draftPros.map((pro) => ({ ...pro, services: pro.services.filter((serviceId) => serviceId !== id) }));
+    setDraftServices(nextServices);
+    setDraftPros(nextPros);
+  }
+
+  function saveChanges() {
+    setCatalog(draftServices, draftPros);
+    setSaveNotice('Alteracoes salvas.');
+  }
+
+  function discardChanges() {
+    setDraftServices(services);
+    setDraftPros(pros);
+    setSaveNotice('');
   }
 
   return (
     <>
-      <div className="section-title">
+      <div className="section-title editor-title">
         <h2>Servicos ativos</h2>
         <button className="icon-action" onClick={addService} aria-label="Adicionar servico"><Plus size={16} /></button>
       </div>
+
+      <div className="editor-save-bar">
+        <button className="primary" onClick={saveChanges} disabled={!hasChanges}>
+          <Check size={17} /> Salvar alteracoes
+        </button>
+        <button className="secondary compact" onClick={discardChanges} disabled={!hasChanges}>Cancelar</button>
+        <span>{hasChanges ? 'Existem alteracoes nao salvas.' : saveNotice || 'Tudo salvo.'}</span>
+      </div>
+
       <div className="stack">
-        {services.map((service) => {
-          const proIds = getServiceProIds(service, pros);
+        {draftServices.map((service) => {
+          const proIds = getServiceProIds(service, draftPros);
           return (
             <article className="editor-card" key={service.id}>
               <div className="editor-card-head">
@@ -1823,7 +1874,7 @@ function ServiceManager({ services, pros, usage, setServices, setCatalog }) {
               <div className="assignment-block">
                 <span>Profissionais que atendem</span>
                 <div className="pill-toggle-grid">
-                  {pros.map((pro) => (
+                  {draftPros.map((pro) => (
                     <button
                       key={pro.id}
                       className={proIds.includes(pro.id) ? 'active' : ''}
@@ -1842,45 +1893,83 @@ function ServiceManager({ services, pros, usage, setServices, setCatalog }) {
   );
 }
 
-function TeamManager({ pros, services, usage, setPros, setCatalog }) {
+function TeamManager({ pros, services, usage, setCatalog }) {
+  const [draftPros, setDraftPros] = useState(pros);
+  const [draftServices, setDraftServices] = useState(services);
+  const [saveNotice, setSaveNotice] = useState('');
+
+  useEffect(() => {
+    setDraftPros(pros);
+    setDraftServices(services);
+  }, [pros, services]);
+
+  const hasChanges = JSON.stringify(draftPros) !== JSON.stringify(pros)
+    || JSON.stringify(draftServices) !== JSON.stringify(services);
+
   function addProfessional() {
-    setPros([...pros, { id: `pro-${Date.now()}`, name: 'Novo profissional', role: 'Especialidade', initials: 'N', services: [] }]);
+    setSaveNotice('');
+    setDraftPros([...draftPros, { id: createRecordId('pro', draftPros), name: 'Novo profissional', role: 'Especialidade', initials: 'N', services: [] }]);
   }
 
   function updateProfessional(id, patch) {
-    setPros(pros.map((pro) => (pro.id === id ? { ...pro, ...patch } : pro)));
+    setSaveNotice('');
+    setDraftPros(draftPros.map((pro) => (pro.id === id ? { ...pro, ...patch } : pro)));
   }
 
   function toggleService(proId, serviceId) {
-    const pro = pros.find((item) => item.id === proId);
+    setSaveNotice('');
+    const pro = draftPros.find((item) => item.id === proId);
     const nextServiceIds = pro.services.includes(serviceId)
       ? pro.services.filter((id) => id !== serviceId)
       : [...pro.services, serviceId];
-    const nextPros = pros.map((item) => (item.id === proId ? { ...item, services: nextServiceIds } : item));
-    const nextServices = services.map((service) => {
+    const nextPros = draftPros.map((item) => (item.id === proId ? { ...item, services: nextServiceIds } : item));
+    const nextServices = draftServices.map((service) => {
       const currentProIds = getServiceProIds(service, nextPros);
       return { ...service, proIds: currentProIds };
     });
-    setCatalog(nextServices, nextPros);
+    setDraftPros(nextPros);
+    setDraftServices(nextServices);
   }
 
   function deleteProfessional(id) {
-    const nextPros = pros.filter((pro) => pro.id !== id);
-    const nextServices = services.map((service) => ({
+    setSaveNotice('');
+    const nextPros = draftPros.filter((pro) => pro.id !== id);
+    const nextServices = draftServices.map((service) => ({
       ...service,
       proIds: getServiceProIds(service, nextPros).filter((proId) => proId !== id),
     }));
-    setCatalog(nextServices, nextPros);
+    setDraftPros(nextPros);
+    setDraftServices(nextServices);
+  }
+
+  function saveChanges() {
+    setCatalog(draftServices, draftPros);
+    setSaveNotice('Alteracoes salvas.');
+  }
+
+  function discardChanges() {
+    setDraftPros(pros);
+    setDraftServices(services);
+    setSaveNotice('');
   }
 
   return (
     <>
-      <div className="section-title">
+      <div className="section-title editor-title">
         <h2>Profissionais</h2>
         <button className="icon-action" onClick={addProfessional} aria-label="Adicionar profissional"><Plus size={16} /></button>
       </div>
+
+      <div className="editor-save-bar">
+        <button className="primary" onClick={saveChanges} disabled={!hasChanges}>
+          <Check size={17} /> Salvar alteracoes
+        </button>
+        <button className="secondary compact" onClick={discardChanges} disabled={!hasChanges}>Cancelar</button>
+        <span>{hasChanges ? 'Existem alteracoes nao salvas.' : saveNotice || 'Tudo salvo.'}</span>
+      </div>
+
       <div className="stack">
-        {pros.map((pro) => (
+        {draftPros.map((pro) => (
           <article className="editor-card" key={pro.id}>
             <div className="editor-card-head">
               <div className="editor-person">
@@ -1911,7 +2000,7 @@ function TeamManager({ pros, services, usage, setPros, setCatalog }) {
             <div className="assignment-block">
               <span>Servicos habilitados</span>
               <div className="pill-toggle-grid">
-                {services.map((service) => (
+                {draftServices.map((service) => (
                   <button
                     key={service.id}
                     className={pro.services.includes(service.id) ? 'active' : ''}
@@ -1930,14 +2019,34 @@ function TeamManager({ pros, services, usage, setPros, setCatalog }) {
 }
 
 function SettingsPanel({ settings, setSettings, appointments, services, pros }) {
+  const [draftSettings, setDraftSettings] = useState(settings);
+  const [saveNotice, setSaveNotice] = useState('');
+
+  useEffect(() => {
+    setDraftSettings(settings);
+  }, [settings]);
+
+  const hasChanges = JSON.stringify(draftSettings) !== JSON.stringify(settings);
+
   function updateField(field, value) {
-    setSettings({ ...settings, [field]: value });
+    setSaveNotice('');
+    setDraftSettings({ ...draftSettings, [field]: value });
+  }
+
+  function saveChanges() {
+    setSettings(draftSettings);
+    setSaveNotice('Configuracao salva.');
+  }
+
+  function discardChanges() {
+    setDraftSettings(settings);
+    setSaveNotice('');
   }
 
   function exportBackup() {
     const payload = {
       exportedAt: new Date().toISOString(),
-      settings,
+      settings: draftSettings,
       appointments,
       services,
       pros,
@@ -1961,15 +2070,23 @@ function SettingsPanel({ settings, setSettings, appointments, services, pros }) 
 
       <div className="form-card settings-form">
         <label>Nome do salao</label>
-        <input value={settings.businessName} onChange={(e) => updateField('businessName', e.target.value)} />
+        <input value={draftSettings.businessName} onChange={(e) => updateField('businessName', e.target.value)} />
         <label>WhatsApp principal</label>
-        <input value={settings.whatsapp} onChange={(e) => updateField('whatsapp', e.target.value)} inputMode="tel" />
+        <input value={draftSettings.whatsapp} onChange={(e) => updateField('whatsapp', e.target.value)} inputMode="tel" />
         <label>Endereco / cidade</label>
-        <input value={settings.address} onChange={(e) => updateField('address', e.target.value)} />
+        <input value={draftSettings.address} onChange={(e) => updateField('address', e.target.value)} />
         <label>Instagram</label>
-        <input value={settings.instagram} onChange={(e) => updateField('instagram', e.target.value)} />
+        <input value={draftSettings.instagram} onChange={(e) => updateField('instagram', e.target.value)} />
         <label>Mensagem de confirmacao</label>
-        <textarea value={settings.confirmationNote} onChange={(e) => updateField('confirmationNote', e.target.value)} />
+        <textarea value={draftSettings.confirmationNote} onChange={(e) => updateField('confirmationNote', e.target.value)} />
+      </div>
+
+      <div className="editor-save-bar">
+        <button className="primary" onClick={saveChanges} disabled={!hasChanges}>
+          <Check size={17} /> Salvar configuracao
+        </button>
+        <button className="secondary compact" onClick={discardChanges} disabled={!hasChanges}>Cancelar</button>
+        <span>{hasChanges ? 'Existem alteracoes nao salvas.' : saveNotice || 'Tudo salvo.'}</span>
       </div>
 
       <button className="secondary" onClick={exportBackup}><Download size={18} /> Exportar backup JSON</button>
